@@ -1,5 +1,6 @@
-use crate::utils::Report;
+use crate::utils::{PackageMetadata, Report};
 use log::info;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::prelude::*;
 
@@ -38,28 +39,43 @@ pub fn generate_markdown_report(
     }
 
     let mut markdown = String::new();
-    markdown.push_str("# 软件包测试结果矩阵\n\n");
-    markdown.push_str("| 软件包 | 种类 | ");
+    markdown.push_str("# 软件包测试结果矩阵 Software package test results\n\n");
+    markdown.push_str("> 图标说明 Legend: ✅ = 通过 Passed; ⚠️ = 部分或全部测试不通过 Not all tests passed; ❓ = 未知 Unknown\n\n");
+    markdown.push_str("| 软件包 Package | 种类 Type | "); // TODO: add field for description
     for distro in distros {
-        markdown.push_str(&format!("{} | ", distro));
+        markdown.push_str(&format!("[{}](#{}) | ", distro, distro));
     }
     markdown.pop();
-    markdown.push_str("\n|:------|:-----| ");
+    markdown.push_str("\n|:------|:------| ");
     for _ in distros {
         markdown.push_str(":-------| ");
+        // markdown.push_str(":-------| ");
     }
     markdown.pop();
     markdown.push('\n');
 
-    for (pkg_idx, &package) in packages.iter().enumerate() {
-        let package_type = reports
-            .iter()
-            .find(|r| r.package_name == package)
-            .map_or("", |r| r.package_type.as_str());
-        markdown.push_str(&format!("| {} | {} ", package, package_type));
+    // map: distro -> (package, env_info)
+    let mut distro_env_infos: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
 
-        for distro_idx in 0..distros.len() {
+    for (pkg_idx, &package) in packages.iter().enumerate() {
+        let package_metadata = reports.iter().find(|r| r.package_name == package).map_or(
+            PackageMetadata {
+                ..Default::default()
+            },
+            |r| r.package_metadata.clone(),
+        ); // is clone really needed...?
+
+        markdown.push_str(&format!(
+            "| {} | {} ",
+            package_metadata.package_pretty_name, package_metadata.package_type
+        ));
+
+        for (distro_idx, &_distro) in distros.iter().enumerate() {
             if let Some(report) = report_matrix[pkg_idx][distro_idx] {
+                distro_env_infos
+                    .entry(distros[distro_idx].to_string())
+                    .or_default()
+                    .push((packages[pkg_idx].to_string(), report.os_version.clone()));
                 markdown.push_str(&format!(
                     "| {} {}{} ",
                     if report.all_tests_passed {
@@ -67,12 +83,12 @@ pub fn generate_markdown_report(
                     } else {
                         "⚠️"
                     },
-                    if !report.package_version.is_empty() {
+                    if !package_metadata.package_version.is_empty() {
                         format!("{}=", report.package_name)
                     } else {
                         String::from("")
                     },
-                    report.package_version
+                    package_metadata.package_version
                 ));
             } else {
                 markdown.push_str("| ❓ ");
@@ -80,6 +96,23 @@ pub fn generate_markdown_report(
         }
         markdown.push_str("|\n");
     }
+
+    let mut appending_details = String::new();
+
+    for (distro, packages) in &distro_env_infos {
+        appending_details.push_str(&format!("# <span id=\"{}\">{}</span>\n\n", distro, distro));
+
+        for (package, env_info) in packages {
+            let package_id = format!("{}_{}", distro, package); // 创建唯一的 id
+            appending_details.push_str(&format!(
+                "- <span id=\"{}\">{}: {}</span>\n\n",
+                package_id, package, env_info
+            ));
+        }
+    }
+
+    markdown.push_str(&appending_details);
+
     let file_path = "summary.md";
     let mut file = File::create(file_path)?;
     file.write_all(markdown.as_bytes())?;
